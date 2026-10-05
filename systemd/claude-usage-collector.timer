@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Claude usage collector every 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

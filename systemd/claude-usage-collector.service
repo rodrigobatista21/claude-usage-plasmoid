@@ -1,0 +1,12 @@
+[Unit]
+Description=Claude usage collector (API fallback + ccusage active block)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/share/claude-usage/collector.py
+Nice=10
+IOSchedulingClass=idle
+MemoryHigh=400M
+MemoryMax=768M
+TimeoutStartSec=90
+SyslogIdentifier=claude-usage-collector

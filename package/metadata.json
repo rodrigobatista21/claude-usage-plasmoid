@@ -1,0 +1,20 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "Rodrigo Monteiro"
+            }
+        ],
+        "Category": "System Information",
+        "Description": "Limites de uso do Claude Code (5 h, 7 dias) e bloco atual",
+        "Icon": "office-chart-ring",
+        "Id": "org.rodrigom.claudeusage",
+        "License": "MIT",
+        "Name": "Claude Usage",
+        "Version": "1.0.0",
+        "Website": "https://github.com/rodrigobatista21/claude-usage-plasmoid",
+        "BugReportUrl": "https://github.com/rodrigobatista21/claude-usage-plasmoid/issues"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0"
+}
