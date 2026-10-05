@@ -16,6 +16,11 @@ PlasmoidItem {
     property int nowSec: Math.floor(Date.now() / 1000)
 
     readonly property string cachePath: Plasmoid.configuration.cachePath
+    // The engine keys sources by command string, so two instances (panel +
+    // desktop) running the same `cat` would share one source and one poll
+    // timer. The trailing shell comment makes each instance's source unique.
+    readonly property string readerSource: "cat \"" + cachePath + "\" # claudeusage-" + Plasmoid.id
+    property double lastReadAt: Date.now()
     readonly property int pollMs: Math.max(5, Plasmoid.configuration.pollIntervalSec) * 1000
     readonly property int staleAfterSec: Math.max(1, Plasmoid.configuration.staleAfterMin) * 60
 
@@ -86,8 +91,9 @@ PlasmoidItem {
         id: reader
         engine: "executable"
         interval: root.pollMs
-        Component.onCompleted: connectedSources = ["cat \"" + root.cachePath + "\""]
+        Component.onCompleted: connectedSources = [root.readerSource]
         onNewData: function (sourceName, data) {
+            root.lastReadAt = Date.now();
             var code = data["exit code"];
             if (code !== 0) {
                 var err = String(data["stderr"] || "");
@@ -120,13 +126,30 @@ PlasmoidItem {
     }
 
     function reread() {
-        var s = reader.connectedSources;
+        // Drop whatever is connected (including a source from an old
+        // cachePath) and reconnect this instance's own source.
         reader.connectedSources = [];
-        reader.connectedSources = s;
+        reader.connectedSources = [root.readerSource];
     }
     onCachePathChanged: reread()
 
     Timer { id: rereadTimer; interval: 4000; onTriggered: root.reread() }
+
+    // Watchdog: the executable engine sometimes stops re-running an
+    // interval source (seen with two instances sharing one source name
+    // after a disconnect/reconnect). If no read landed in 3 intervals,
+    // reconnect.
+    Timer {
+        interval: root.pollMs
+        running: true
+        repeat: true
+        onTriggered: {
+            if (Date.now() - root.lastReadAt > root.pollMs * 3) {
+                console.warn("claudeusage: no cache read for " + Math.round((Date.now() - root.lastReadAt) / 1000) + "s, reconnecting");
+                root.reread();
+            }
+        }
+    }
     Timer { interval: 1000; running: true; repeat: true; onTriggered: root.nowSec = Math.floor(Date.now() / 1000) }
 
     // ---- plasmoid glue ---------------------------------------------------------

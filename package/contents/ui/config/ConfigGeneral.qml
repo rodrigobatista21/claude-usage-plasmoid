@@ -14,6 +14,15 @@ KCM.SimpleKCM {
     property alias cfg_showBlockSection: showBlock.checked
     property string cfg_panelMetric
 
+    // Plasma 6 also injects the *Default values; declaring them keeps the
+    // config dialog from logging "Setting initial properties failed".
+    property string cfg_cachePathDefault
+    property int cfg_pollIntervalSecDefault
+    property string cfg_panelMetricDefault
+    property bool cfg_showPercentInPanelDefault
+    property int cfg_staleAfterMinDefault
+    property bool cfg_showBlockSectionDefault
+
     Kirigami.FormLayout {
         Kirigami.Separator {
             Kirigami.FormData.isSection: true
