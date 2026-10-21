@@ -8,8 +8,11 @@ Policy:
     10 min, with jitter, honoring our own backoff and ccstatusline's lock.
   * Never refreshes the OAuth token: refresh tokens are single-use and racing
     Claude Code for them can revoke the login. Only reads the file.
-  * ccusage (local JSONL scan, ~300 MB peak) runs only while a session is
-    active and at most every 5 min.
+  * ccusage (local JSONL scan) runs only while a session is active and at
+    most every 5 min. It is loaded with --single-thread: the parallel loader
+    peaked at ~1.6 GB for 5 GB of history, while this peaks at ~0.5 GB in
+    ~3 s. It must stay under the unit's MemoryMax; exceeding it is meant to
+    fail fast and show up in the journal, not to be throttled into reclaim.
 """
 import json
 import os
@@ -157,7 +160,7 @@ def run_ccusage():
     t0 = time.monotonic()
     try:
         r = subprocess.run(
-            [exe, "blocks", "--active", "--json", "-O"],
+            [exe, "blocks", "--active", "--json", "-O", "--single-thread"],
             capture_output=True, text=True, timeout=60, env=subprocess_env_for(exe),
         )
         data = json.loads(r.stdout)

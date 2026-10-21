@@ -6,7 +6,11 @@ Type=oneshot
 ExecStart=/usr/bin/python3 %h/.local/share/claude-usage/collector.py
 Nice=10
 IOSchedulingClass=idle
-MemoryHigh=400M
-MemoryMax=768M
+# No MemoryHigh on purpose: it throttles cgroup reclaim instead of failing,
+# which used to pin the collector in swap/D-state for minutes. The ccusage
+# peak is ~0.5 GB; MemoryMax=4G is headroom so growth shows up as a fast
+# failure in the journal (the timer retries 5 min later), not a load spike.
+MemoryMax=4G
+MemorySwapMax=0
 TimeoutStartSec=90
 SyslogIdentifier=claude-usage-collector

@@ -6,7 +6,10 @@ Type=oneshot
 ExecStart=/usr/bin/python3 %h/.local/share/claude-usage/collector.py --force
 Nice=10
 IOSchedulingClass=idle
-MemoryHigh=400M
-MemoryMax=768M
+# Same limits as the timer unit, and for the same reason: the refresh button
+# runs the same ccusage scan, so MemoryHigh would throttle it too. No
+# MemoryHigh, MemoryMax is headroom, and no swapping for this cgroup.
+MemoryMax=4G
+MemorySwapMax=0
 TimeoutStartSec=90
 SyslogIdentifier=claude-usage-collector
