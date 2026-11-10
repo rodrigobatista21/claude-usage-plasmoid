@@ -1,6 +1,6 @@
 # Claude Usage para KDE Plasma
 
-Um widget nativo do Plasma 6 que mostra quanto dos limites da sua assinatura do Claude Code você já usou: a janela de 5 horas, a janela de 7 dias, a janela semanal por modelo (Fable) e quanto o bloco atual de 5 horas está custando. Ele nunca consulta a Anthropic em loop e nunca mexe no seu refresh token.
+Um widget nativo do Plasma 6 que mostra quanto dos limites da sua assinatura do Claude Code você já usou: a janela de 7 dias, a janela semanal por modelo (Fable), a janela de 5 horas nas contas que ainda a informam e quanto o bloco atual de 5 horas do ccusage está custando. Ele nunca consulta a Anthropic em loop e nunca mexe no seu refresh token.
 
 [Read in English](README.md)
 
@@ -67,7 +67,7 @@ Botão direito no widget > **Configurar**:
 
 | Opção | Padrão | O que faz |
 |---|---|---|
-| Métrica no painel | Sessão (5 h) | Qual janela o anel do painel mostra |
+| Métrica no painel | Semana (todos os modelos) | Qual janela o anel do painel mostra; cai para a outra quando a escolhida não é informada |
 | Mostrar porcentagem | ligado | Número ao lado do anel |
 | Bloco atual | ligado | Tokens, custo, consumo e projeção do ccusage |
 | Reler o cache a cada | 30 s | Frequência com que o widget lê o cache |
@@ -111,6 +111,7 @@ Restaura a status line anterior, desativa o timer, remove o plasmoid e apaga o c
 - Os textos do widget estão em português do Brasil. Traduções são bem-vindas.
 - `rate_limits` só aparece depois da primeira resposta da API numa sessão do Claude Code, então uma sessão nova leva um ou dois prompts até o widget atualizar. O coletor cobre o intervalo com a API quando precisa.
 - As janelas por modelo (Fable hoje) vêm só da API, então atualizam a cada 10 minutos, não a cada poucos segundos.
+- A janela de sessão de 5 horas deixou de ser informada em novembro de 2026. O widget a trata como opcional: uma janela que a API não lista mais sai do cache e a barra some; se ela voltar, a barra volta junto.
 
 ## Créditos
 

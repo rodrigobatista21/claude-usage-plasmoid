@@ -7,12 +7,12 @@
             }
         ],
         "Category": "System Information",
-        "Description": "Limites de uso do Claude Code (5 h, 7 dias) e bloco atual",
+        "Description": "Limites de uso do Claude Code (7 dias, por modelo) e bloco atual",
         "Icon": "office-chart-ring",
         "Id": "org.rodrigom.claudeusage",
         "License": "MIT",
         "Name": "Claude Usage",
-        "Version": "1.0.0",
+        "Version": "1.1.0",
         "Website": "https://github.com/rodrigobatista21/claude-usage-plasmoid",
         "BugReportUrl": "https://github.com/rodrigobatista21/claude-usage-plasmoid/issues"
     },

@@ -25,7 +25,7 @@ import urllib.request
 
 from claude_usage_common import (
     check_thresholds, find_bin, is_stale, iso_to_epoch, log, normalize_api_limits,
-    now, read_cache, scoped_keys, set_limit, subprocess_env_for, update_cache,
+    now, prune_unreported, read_cache, set_limit, subprocess_env_for, update_cache,
 )
 
 OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
@@ -69,6 +69,21 @@ def session_active(cache, at):
     return False
 
 
+def limits_stale(cache, max_age, at):
+    """The weekly window is the one every account has, and the statusLine
+    keeps it fresh. Every other bucket in the cache counts too: the
+    per-model windows (Fable) only come from the API, and a bucket that
+    stopped being reported stays stale until one API response prunes it.
+    An account with nothing but the weekly window just rechecks hourly."""
+    limits = cache["limits"]
+    if is_stale(limits.get("seven_day"), max_age, at):
+        return True
+    others = [k for k in limits if k != "seven_day"]
+    if others:
+        return any(is_stale(limits[k], max_age, at) for k in others)
+    return at - cache["api"].get("last_success_at", 0) > SCOPED_RECHECK_S
+
+
 def read_token(at):
     try:
         with open(CREDENTIALS) as f:
@@ -105,8 +120,11 @@ def merge_ccstatusline(cache, at):
     if mtime <= ours:
         return False
     merged = False
-    if data.get("sessionUsage") is not None:
-        set_limit(cache, "five_hour", data["sessionUsage"], iso_to_epoch(data.get("sessionResetAt")),
+    # Same rule as the per-model windows below: ccstatusline writes
+    # sessionUsage 0 with no reset time when the API has no session window.
+    session_reset = iso_to_epoch(data.get("sessionResetAt"))
+    if data.get("sessionUsage") is not None and session_reset:
+        set_limit(cache, "five_hour", data["sessionUsage"], session_reset,
                   "ccstatusline", ts=mtime)
         merged = True
     if data.get("weeklyUsage") is not None:
@@ -207,20 +225,7 @@ def main(argv):
 
     # ---- limits -------------------------------------------------------------
     max_age = STALE_ACTIVE_S if active else STALE_IDLE_S
-
-    def limits_stale(c):
-        """The statusLine keeps five_hour/seven_day fresh forever, but the
-        per-model windows (Fable) only come from the API, so they count too.
-        An account with no scoped window at all just rechecks hourly."""
-        main_keys = ("five_hour", "seven_day")
-        if any(is_stale(c["limits"].get(k), max_age, at) for k in main_keys):
-            return True
-        scoped = scoped_keys(c)
-        if scoped:
-            return any(is_stale(c["limits"].get(k), max_age, at) for k in scoped)
-        return at - c["api"].get("last_success_at", 0) > SCOPED_RECHECK_S
-
-    stale = force or limits_stale(cache)
+    stale = force or limits_stale(cache, max_age, at)
     api_result = None  # (status, payload, retry_after, error)
     merged_ccs = False
     if not stale:
@@ -228,7 +233,7 @@ def main(argv):
         log(f"skip api: limits fresh ({age // 60}m)")
     else:
         merged_ccs = merge_ccstatusline(cache, at)
-        still_stale = force or limits_stale(cache)
+        still_stale = force or limits_stale(cache, max_age, at)
         blocked = max(api.get("backoff_until", 0), ccstatusline_blocked_until())
         spacing_ok = force or (at - api.get("last_attempt_at", 0)) >= API_MIN_SPACING_S + random.randint(0, API_JITTER_S)
         if merged_ccs and not still_stale:
@@ -272,8 +277,13 @@ def main(argv):
                 a["backoff_until"] = 0
                 a["last_error"] = None
                 a["consecutive_429"] = 0
+                reported = set()
                 for key, pct, resets, label in normalize_api_limits(payload):
                     set_limit(c, key, pct, resets, "api", label=label, ts=at)
+                    reported.add(key)
+                dropped = prune_unreported(c, reported, at)
+                if dropped:
+                    log("api: no longer reports " + ", ".join(dropped) + "; dropped")
                 extra = payload.get("extra_usage") or {}
                 if "is_enabled" in extra:
                     c["extra_usage_enabled"] = bool(extra["is_enabled"])

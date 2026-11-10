@@ -35,8 +35,8 @@ KCM.SimpleKCM {
             textRole: "text"
             valueRole: "value"
             model: [
-                { text: "Sessão (5 h)", value: "five_hour" },
-                { text: "Semana (todos os modelos)", value: "seven_day" }
+                { text: "Semana (todos os modelos)", value: "seven_day" },
+                { text: "Sessão (5 h), se a conta tiver", value: "five_hour" }
             ]
             onActivated: page.cfg_panelMetric = currentValue
             Component.onCompleted: currentIndex = Math.max(0, indexOfValue(page.cfg_panelMetric))

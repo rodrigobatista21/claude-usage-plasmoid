@@ -12,7 +12,7 @@
             <default>30</default>
         </entry>
         <entry name="panelMetric" type="String">
-            <default>five_hour</default>
+            <default>seven_day</default>
         </entry>
         <entry name="showPercentInPanel" type="Bool">
             <default>true</default>

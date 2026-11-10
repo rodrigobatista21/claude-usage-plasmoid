@@ -22,6 +22,7 @@ LOCK_PATH = os.path.join(CACHE_DIR, "usage.json.lock")
 
 MAX_SAMPLES = 300
 SAMPLE_THROTTLE_S = 60
+PRUNE_GRACE_S = 15 * 60
 
 # Which levels trigger a desktop notification, per bucket. 70% is noise.
 THRESHOLDS = {"five_hour": (90, 100), "seven_day": (90,)}
@@ -195,8 +196,30 @@ def normalize_api_limits(data):
     return out
 
 
-def scoped_keys(cache):
-    return [k for k in cache["limits"] if k.startswith("seven_day_")]
+def prune_unreported(cache, reported, at, grace_s=PRUNE_GRACE_S):
+    """Drop buckets a successful API response no longer lists, with their
+    history and notification state, and return their keys.
+
+    The API is the authoritative list of windows an account has. When one
+    goes away (the 5-hour session window stopped being reported on
+    2026-11-09) its last value would otherwise sit in the cache forever,
+    shown as a dead 0% and counted as stale on every run. A bucket another
+    producer refreshed within the grace period is kept, and an empty report
+    prunes nothing, so an unexpected payload shape can't wipe the cache. A
+    window that comes back is simply recreated by set_limit()."""
+    if not reported:
+        return []
+    dropped = []
+    for key in list(cache["limits"]):
+        if key in reported:
+            continue
+        if at - cache["limits"][key].get("updated_at", 0) < grace_s:
+            continue
+        del cache["limits"][key]
+        cache["history"].pop(key, None)
+        cache["notified"].pop(key, None)
+        dropped.append(key)
+    return dropped
 
 
 # --- notifications ------------------------------------------------------------
