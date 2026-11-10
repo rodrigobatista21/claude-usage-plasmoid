@@ -1,6 +1,6 @@
 # Claude Usage for KDE Plasma
 
-A native Plasma 6 widget that shows how much of your Claude Code subscription limits you have used: the 7-day window, the per-model weekly window (Fable), the 5-hour session window on accounts that still report one, and what the current 5-hour ccusage block is costing. It never polls Anthropic in a loop and never touches your OAuth refresh token.
+A native Plasma 6 widget that shows how much of your Claude Code subscription limits you have used: the 5-hour session window (on plans that have one), the 7-day window, the per-model weekly window (Fable), and what the current 5-hour ccusage block is costing. It never polls Anthropic in a loop and never touches your OAuth refresh token.
 
 [Leia em português](README.pt-BR.md)
 
@@ -67,7 +67,7 @@ Right-click the widget > **Configure**:
 
 | Setting | Default | What it does |
 |---|---|---|
-| Panel metric | Week (all models) | Which window the ring in the panel shows; falls back to the other one when the chosen window isn't reported |
+| Panel metric | Session (5 h) | Which window the ring in the panel shows; falls back to the other one when the account doesn't report the chosen window |
 | Show percentage | on | Number next to the ring |
 | Current block | on | Tokens, cost, burn rate and projection from ccusage |
 | Re-read cache every | 30 s | How often the widget reads the cache file |
@@ -111,7 +111,7 @@ This restores your previous status line, disables the timer, removes the plasmoi
 - Widget strings are in Brazilian Portuguese. Translations are welcome.
 - `rate_limits` shows up only after the first API response of a Claude Code session, so a fresh session takes a prompt or two before the widget updates. The collector covers the gap with the API when needed.
 - Per-model windows (Fable today) come only from the API, so they refresh every 10 minutes, not every few seconds.
-- The 5-hour session window stopped being reported in November 2026. The widget treats it as optional: a window the API no longer lists is dropped from the cache and its bar disappears; if it comes back, so does the bar.
+- Which windows exist depends on the plan. A Max 20x (Ultra) account stopped reporting the 5-hour session window in November 2026, so the widget treats every window as optional: one the API no longer lists is dropped from the cache and its bar disappears; if it comes back, so does the bar.
 
 ## Credits
 

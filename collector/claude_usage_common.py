@@ -200,9 +200,10 @@ def prune_unreported(cache, reported, at, grace_s=PRUNE_GRACE_S):
     """Drop buckets a successful API response no longer lists, with their
     history and notification state, and return their keys.
 
-    The API is the authoritative list of windows an account has. When one
-    goes away (the 5-hour session window stopped being reported on
-    2026-11-09) its last value would otherwise sit in the cache forever,
+    The API is the authoritative list of windows an account has, and that
+    list depends on the plan. When one goes away (a Max 20x / Ultra account
+    stopped reporting the 5-hour session window on 2026-11-09) its last
+    value would otherwise sit in the cache forever,
     shown as a dead 0% and counted as stale on every run. A bucket another
     producer refreshed within the grace period is kept, and an empty report
     prunes nothing, so an unexpected payload shape can't wipe the cache. A

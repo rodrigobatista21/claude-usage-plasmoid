@@ -51,9 +51,9 @@ PlasmoidItem {
     readonly property int dataAge: lastUpdated ? nowSec - lastUpdated : -1
     // Old data only matters while a session is running; idle is just idle.
     readonly property bool isStale: hasData && sessionActive && dataAge > staleAfterSec
-    // The 5-hour window is optional (the API stopped reporting it in
-    // Nov 2026), so whichever metric is configured falls back to the other
-    // one instead of leaving the ring at a dead 0%.
+    // Not every plan has a 5-hour window (a Max 20x / Ultra account
+    // stopped reporting one in Nov 2026), so whichever metric is configured
+    // falls back to the other one instead of leaving the ring at a dead 0%.
     readonly property var panelEntry: Plasmoid.configuration.panelMetric === "five_hour" ? (fiveHour || sevenDay) : (sevenDay || fiveHour)
     readonly property real panelPct: panelEntry ? panelEntry.used_percentage : 0
     readonly property bool isCritical: (fiveHour && fiveHour.used_percentage >= 90) || (sevenDay && sevenDay.used_percentage >= 90)
