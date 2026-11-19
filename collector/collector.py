@@ -14,6 +14,7 @@ Policy:
     ~3 s. It must stay under the unit's MemoryMax; exceeding it is meant to
     fail fast and show up in the journal, not to be throttled into reclaim.
 """
+import hashlib
 import json
 import os
 import random
@@ -30,8 +31,7 @@ from claude_usage_common import (
 
 OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CREDENTIALS = os.path.expanduser("~/.claude/.credentials.json")
-CCSTATUSLINE_CACHE = os.path.expanduser("~/.cache/ccstatusline/usage.json")
-CCSTATUSLINE_LOCK = os.path.expanduser("~/.cache/ccstatusline/usage.lock")
+CCSTATUSLINE_DIR = os.path.expanduser("~/.cache/ccstatusline")
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 
 STALE_ACTIVE_S = 10 * 60
@@ -99,20 +99,53 @@ def read_token(at):
     return token, None
 
 
+def ccstatusline_paths(suffix):
+    """ccstatusline >= 2.2.34 names its usage files usage-<hash>.<suffix>,
+    the hash being sha256 of the resolved Claude config dir (first 16 hex);
+    older versions used usage.<suffix>. Return both, new name first."""
+    config_dir = os.path.abspath(os.path.expanduser(
+        os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude"))
+    digest = hashlib.sha256(config_dir.encode()).hexdigest()[:16]
+    return [os.path.join(CCSTATUSLINE_DIR, f"usage-{digest}.{suffix}"),
+            os.path.join(CCSTATUSLINE_DIR, f"usage.{suffix}")]
+
+
+def ccstatusline_cache_path():
+    """The newest of the two cache names, or None if neither exists."""
+    found = []
+    for path in ccstatusline_paths("json"):
+        try:
+            found.append((os.stat(path).st_mtime, path))
+        except OSError:
+            pass
+    return max(found)[1] if found else None
+
+
 def ccstatusline_blocked_until():
-    try:
-        with open(CCSTATUSLINE_LOCK) as f:
-            return int(json.load(f).get("blockedUntil") or 0)
-    except Exception:
-        return 0
+    """Latest deadline among the lock files. A deadline more than a day
+    ahead is bogus (ccstatusline ignores it too) and counts as no lock."""
+    at = now()
+    until = 0
+    for path in ccstatusline_paths("lock"):
+        try:
+            with open(path) as f:
+                value = int(json.load(f).get("blockedUntil") or 0)
+        except Exception:
+            continue
+        if value <= at + 86400:
+            until = max(until, value)
+    return until
 
 
 def merge_ccstatusline(cache, at):
     """ccstatusline keeps its own 180 s API cache; if it's newer than ours,
     use it instead of spending another request on the same endpoint."""
+    path = ccstatusline_cache_path()
+    if not path:
+        return False
     try:
-        mtime = int(os.stat(CCSTATUSLINE_CACHE).st_mtime)
-        with open(CCSTATUSLINE_CACHE) as f:
+        mtime = int(os.stat(path).st_mtime)
+        with open(path) as f:
             data = json.load(f)
     except Exception:
         return False

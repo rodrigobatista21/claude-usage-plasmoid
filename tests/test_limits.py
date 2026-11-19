@@ -78,18 +78,67 @@ class LimitsStale(unittest.TestCase):
         self.assertTrue(collector.limits_stale(c, collector.STALE_ACTIVE_S, NOW))
 
 
-class MergeCcstatusline(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
-        self.addCleanup(os.unlink, self.tmp.name)
-        self._orig = collector.CCSTATUSLINE_CACHE
-        collector.CCSTATUSLINE_CACHE = self.tmp.name
-        self.addCleanup(setattr, collector, "CCSTATUSLINE_CACHE", self._orig)
+class CcstatuslineFiles(unittest.TestCase):
+    """Isolated ~/.cache/ccstatusline with both the legacy and the
+    hashed (>= 2.2.34) file names available."""
 
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        orig = collector.CCSTATUSLINE_DIR
+        collector.CCSTATUSLINE_DIR = self.dir.name
+        self.addCleanup(setattr, collector, "CCSTATUSLINE_DIR", orig)
+        orig_env = os.environ.get("CLAUDE_CONFIG_DIR")
+        os.environ["CLAUDE_CONFIG_DIR"] = "/home/someone/.claude"
+        self.addCleanup(self._restore_env, orig_env)
+        self.hashed, self.legacy = collector.ccstatusline_paths("json")
+
+    @staticmethod
+    def _restore_env(value):
+        if value is None:
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+        else:
+            os.environ["CLAUDE_CONFIG_DIR"] = value
+
+    def write_file(self, path, data, mtime=NOW):
+        with open(path, "w") as f:
+            json.dump(data, f)
+        os.utime(path, (mtime, mtime))
+
+
+class CcstatuslinePaths(CcstatuslineFiles):
+    def test_hash_matches_ccstatusline(self):
+        # sha256("/home/someone/.claude")[:16], as ccstatusline computes it.
+        import hashlib
+        digest = hashlib.sha256(b"/home/someone/.claude").hexdigest()[:16]
+        self.assertEqual(os.path.basename(self.hashed), f"usage-{digest}.json")
+        self.assertEqual(os.path.basename(self.legacy), "usage.json")
+
+    def test_no_cache(self):
+        self.assertIsNone(collector.ccstatusline_cache_path())
+
+    def test_newest_name_wins(self):
+        self.write_file(self.legacy, {}, mtime=NOW - 600)
+        self.write_file(self.hashed, {}, mtime=NOW)
+        self.assertEqual(collector.ccstatusline_cache_path(), self.hashed)
+        os.utime(self.legacy, (NOW + 1, NOW + 1))
+        self.assertEqual(collector.ccstatusline_cache_path(), self.legacy)
+
+    def test_lock_takes_latest_sane_deadline(self):
+        lock_hashed, lock_legacy = collector.ccstatusline_paths("lock")
+        self.write_file(lock_legacy, {"blockedUntil": collector.now() + 60})
+        self.write_file(lock_hashed, {"blockedUntil": collector.now() + 300})
+        self.assertGreaterEqual(collector.ccstatusline_blocked_until(), collector.now() + 290)
+
+    def test_bogus_lock_deadline_is_ignored(self):
+        lock_hashed, _ = collector.ccstatusline_paths("lock")
+        self.write_file(lock_hashed, {"blockedUntil": collector.now() + 10 * 86400})
+        self.assertEqual(collector.ccstatusline_blocked_until(), 0)
+
+
+class MergeCcstatusline(CcstatuslineFiles):
     def write(self, data):
-        json.dump(data, self.tmp)
-        self.tmp.close()
-        os.utime(self.tmp.name, (NOW, NOW))
+        self.write_file(self.hashed, data)
 
     def test_session_zero_without_reset_is_ignored(self):
         # ccstatusline writes sessionUsage 0 when the API has no session window.
