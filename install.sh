@@ -21,8 +21,6 @@ need python3
 need kpackagetool6
 need systemctl
 command -v notify-send >/dev/null 2>&1 || warn "notify-send not found: threshold notifications will only be logged"
-command -v ccusage >/dev/null 2>&1 || ls "$HOME"/.nvm/versions/node/*/bin/ccusage >/dev/null 2>&1 \
-    || warn "ccusage not found: the 'current block' section will stay empty (npm i -g ccusage)"
 
 say "Collector and wrapper"
 mkdir -p "$SHARE" "$BIN" "$UNITS" "$CONF" "$CACHE"

@@ -23,6 +23,10 @@ LOCK_PATH = os.path.join(CACHE_DIR, "usage.json.lock")
 MAX_SAMPLES = 300
 SAMPLE_THROTTLE_S = 60
 PRUNE_GRACE_S = 15 * 60
+HEARTBEAT_S = 60               # how often an unchanged statusLine value is re-confirmed on disk
+SESSION_TTL_S = 24 * 3600      # forget a Claude Code session not seen for this long
+WINDOW_TOLERANCE_S = 120       # reset times this close are the same window
+TMP_MAX_AGE_S = 3600
 
 # Which levels trigger a desktop notification, per bucket. 70% is noise.
 THRESHOLDS = {"five_hour": (90, 100), "seven_day": (90,)}
@@ -58,6 +62,7 @@ def default_cache():
         "block": {"updated_at": 0, "active": False},
         "history": {},
         "notified": {},
+        "sessions": {},
     }
 
 
@@ -88,12 +93,34 @@ def update_cache(mutator):
         cache["schema"] = SCHEMA
         cache["generated_at"] = now()
         tmp = f"{CACHE_PATH}.tmp-{os.getpid()}"
-        with open(tmp, "w") as f:
-            json.dump(cache, f, separators=(",", ":"))
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, CACHE_PATH)
+        try:
+            with open(tmp, "w") as f:
+                json.dump(cache, f, separators=(",", ":"))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, CACHE_PATH)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
         return cache
+
+
+def sweep_tmp(at=None, max_age_s=TMP_MAX_AGE_S):
+    """Remove temp files a killed writer left behind (SIGKILL/SIGTERM in the
+    middle of update_cache skips the cleanup above). Returns how many."""
+    at = at or now()
+    removed = 0
+    for path in glob.glob(glob.escape(CACHE_PATH) + ".tmp-*"):
+        try:
+            if at - os.stat(path).st_mtime > max_age_s:
+                os.unlink(path)
+                removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 # --- limits -----------------------------------------------------------------
@@ -128,11 +155,101 @@ def add_sample(cache, key, pct, resets_at, ts):
         hist["window"] = window
         hist["samples"] = []
     samples = hist["samples"]
-    if samples and ts - samples[-1][0] < SAMPLE_THROTTLE_S:
-        return
+    if samples and samples[-1][1] == pct:
+        # A flat stretch is two samples, its first and its latest, so the
+        # history spans the whole window instead of the last MAX_SAMPLES
+        # minutes. A change is always recorded.
+        if ts - samples[-1][0] < SAMPLE_THROTTLE_S:
+            return
+        if len(samples) >= 2 and samples[-2][1] == pct:
+            samples[-1][0] = ts
+            return
     samples.append([ts, pct])
     if len(samples) > MAX_SAMPLES:
         del samples[: len(samples) - MAX_SAMPLES]
+
+
+def statusline_verdict(cache, session_id, key, pct, resets_at, ts):
+    """What to do with one window a Claude Code session just reported:
+    "apply", "heartbeat" (same value we already have: only confirm it) or
+    "ignore".
+
+    Every open session re-sends the rate limits of its own last API
+    response on each statusLine refresh. An idle session therefore keeps
+    repeating an old number, and with two sessions open the cache used to
+    flip between the fresh value and the old one every few seconds. So a
+    repeated snapshot is not news: a session's value counts when it changes
+    (a new observation), or the first time the session is seen if it isn't
+    below what is already known. Usage only grows inside a window, so a
+    lower first value is an old one."""
+    if pct is None:
+        return "ignore"
+    pct = round(float(pct), 1)
+    window = int(resets_at or 0)
+    if window and window <= ts:
+        return "ignore"          # a window that already ended
+    cur = cache["limits"].get(key)
+    if not cur:
+        return "apply"
+    cur_window = int(cur.get("resets_at") or 0)
+    if window and cur_window:
+        if window < cur_window - WINDOW_TOLERANCE_S:
+            return "ignore"      # an older window than the one we know
+        if window > cur_window + WINDOW_TOLERANCE_S:
+            return "apply"       # the window rolled over
+    session = (cache.get("sessions") or {}).get(session_id) or {}
+    prev = (session.get("limits") or {}).get(key)
+    if prev is not None and prev != [pct, window]:
+        return "apply"           # this session observed something new
+    cur_pct = cur.get("used_percentage")
+    if cur_pct == pct:
+        return "heartbeat"
+    if prev is None and cur_pct is not None and pct > cur_pct:
+        return "apply"
+    return "ignore"
+
+
+def record_statusline(cache, session_id, windows, ts):
+    """Apply what one session reported (windows: {key: {used_percentage,
+    resets_at}}). Returns (changed, applied): whether the cache needs to be
+    written at all, and whether any limit value moved. Unchanged state is
+    only re-confirmed every HEARTBEAT_S, so an idle session costs one small
+    write a minute instead of one per statusLine refresh."""
+    session_id = session_id or ""
+    changed = applied = False
+    sessions = cache.setdefault("sessions", {})
+    session = sessions.get(session_id)
+    if session is None:
+        session = sessions[session_id] = {"seen_at": 0, "limits": {}}
+        changed = True
+    for key, win in windows.items():
+        pct, resets_at = win.get("used_percentage"), win.get("resets_at")
+        verdict = statusline_verdict(cache, session_id, key, pct, resets_at, ts)
+        if pct is not None:
+            snapshot = [round(float(pct), 1), int(resets_at or 0)]
+            if session["limits"].get(key) != snapshot:
+                session["limits"][key] = snapshot
+                changed = True
+        if verdict == "apply":
+            set_limit(cache, key, pct, resets_at, "statusline", ts=ts)
+            changed = applied = True
+        elif verdict == "heartbeat":
+            entry = cache["limits"][key]
+            if ts - entry.get("updated_at", 0) >= HEARTBEAT_S:
+                entry["updated_at"] = ts
+                entry["source"] = "statusline"
+                changed = True
+    if ts - session.get("seen_at", 0) >= HEARTBEAT_S:
+        session["seen_at"] = ts
+        changed = True
+    if ts - cache.get("session_seen_at", 0) >= HEARTBEAT_S or not cache.get("session_active"):
+        cache["session_active"] = True
+        cache["session_seen_at"] = ts
+        changed = True
+    for sid in [s for s, v in sessions.items() if ts - v.get("seen_at", 0) > SESSION_TTL_S and s != session_id]:
+        del sessions[sid]
+        changed = True
+    return changed, applied
 
 
 def is_stale(entry, max_age_s, at=None):
@@ -207,7 +324,10 @@ def prune_unreported(cache, reported, at, grace_s=PRUNE_GRACE_S):
     shown as a dead 0% and counted as stale on every run. A bucket another
     producer refreshed within the grace period is kept, and an empty report
     prunes nothing, so an unexpected payload shape can't wipe the cache. A
-    window that comes back is simply recreated by set_limit()."""
+    window that hasn't reset yet is kept too: the statusLine can know a
+    window the API doesn't list (the 5-hour one, again, since 2026-11-18),
+    and its last value stays true until the reset even if nobody repeats
+    it. A window that comes back is simply recreated by set_limit()."""
     if not reported:
         return []
     dropped = []
@@ -215,6 +335,8 @@ def prune_unreported(cache, reported, at, grace_s=PRUNE_GRACE_S):
         if key in reported:
             continue
         if at - cache["limits"][key].get("updated_at", 0) < grace_s:
+            continue
+        if (cache["limits"][key].get("resets_at") or 0) > at:
             continue
         del cache["limits"][key]
         cache["history"].pop(key, None)
@@ -266,22 +388,3 @@ def check_thresholds(cache):
                 else:
                     notify(f"Claude Code: {lvl}% usado", f"{label}{when}")
         cache["notified"][key] = st
-
-
-# --- misc -----------------------------------------------------------------------
-
-def find_bin(name, nvm_glob=None):
-    p = shutil.which(name)
-    if p:
-        return p
-    pattern = nvm_glob or f"~/.nvm/versions/node/*/bin/{name}"
-    matches = sorted(glob.glob(os.path.expanduser(pattern)))
-    return matches[-1] if matches else None
-
-
-def subprocess_env_for(binary_path):
-    """nvm's node dir isn't on the systemd user PATH; node scripts need it."""
-    env = os.environ.copy()
-    if binary_path:
-        env["PATH"] = os.path.dirname(binary_path) + os.pathsep + env.get("PATH", "")
-    return env

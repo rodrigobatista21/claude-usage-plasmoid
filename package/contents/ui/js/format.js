@@ -7,11 +7,6 @@ function fmtTokens(n) {
     return String(Math.round(n));
 }
 
-function fmtMoney(v) {
-    if (v === null || v === undefined) return "-";
-    return "US$ " + Number(v).toFixed(2);
-}
-
 function fmtPct(p) {
     if (p === null || p === undefined) return "-";
     return Math.round(p) + "%";
@@ -50,18 +45,25 @@ function relTime(epoch, nowSec) {
     return "há " + fmtDuration(diff);
 }
 
-// Burn-rate forecast from the sample history of one bucket.
-// Returns "" when there isn't enough signal to say anything useful.
-function forecast(history, pct, resetsAt, nowSec) {
-    if (!history || !history.samples || history.samples.length < 2 || !resetsAt) return "";
-    var first = history.samples[0];
-    var last = history.samples[history.samples.length - 1];
-    var elapsedH = (last[0] - first[0]) / 3600;
+// Burn-rate forecast for one bucket, from how much it grew over the last
+// lookbackSec (or since the window's first sample, when that is more
+// recent). The history is a step function: a flat stretch is stored as its
+// first and latest sample, so "the value back then" is the last sample at
+// or before that moment. Returns "" when there isn't enough signal.
+function forecast(history, pct, resetsAt, nowSec, lookbackSec) {
+    if (!history || !history.samples || history.samples.length < 1 || !resetsAt) return "";
+    if (pct === null || pct === undefined || resetsAt <= nowSec) return "";
+    var samples = history.samples;
+    var from = nowSec - lookbackSec;
+    var base = samples[0];
+    for (var i = 0; i < samples.length && samples[i][0] <= from; i++) base = samples[i];
+    var elapsedH = (nowSec - base[0]) / 3600;
     if (elapsedH < 10 / 60) return "";
-    var rate = (last[1] - first[1]) / elapsedH;   // pct points per hour
-    if (rate <= 0.5) return "";
-    var hoursToLimit = (100 - last[1]) / rate;
-    var eta = nowSec + hoursToLimit * 3600;
-    if (eta < resetsAt) return "nesse ritmo, esgota em " + fmtDuration(hoursToLimit * 3600);
-    return "nesse ritmo, não esgota antes do reset";
+    var rate = (pct - base[1]) / elapsedH;   // pct points per hour
+    if (rate <= 0) return "";
+    var secondsToLimit = (100 - pct) / rate * 3600;
+    var eta = nowSec + secondsToLimit;
+    if (eta >= resetsAt) return "nesse ritmo, não esgota antes do reset";
+    var sameDay = new Date(eta * 1000).toDateString() === new Date(nowSec * 1000).toDateString();
+    return "nesse ritmo, esgota às " + (sameDay ? clock(eta) : dateClock(eta)) + " (em " + fmtDuration(secondsToLimit) + ")";
 }

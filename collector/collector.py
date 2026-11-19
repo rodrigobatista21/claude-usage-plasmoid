@@ -8,25 +8,23 @@ Policy:
     10 min, with jitter, honoring our own backoff and ccstatusline's lock.
   * Never refreshes the OAuth token: refresh tokens are single-use and racing
     Claude Code for them can revoke the login. Only reads the file.
-  * ccusage (local JSONL scan) runs only while a session is active and at
-    most every 5 min. It is loaded with --single-thread: the parallel loader
-    peaked at ~1.6 GB for 5 GB of history, while this peaks at ~0.5 GB in
-    ~3 s. It must stay under the unit's MemoryMax; exceeding it is meant to
-    fail fast and show up in the journal, not to be throttled into reclaim.
+  * The active block (claude_usage_blocks: a scan of the recent session
+    logs) is computed only while a session is active and at most every
+    5 min.
 """
 import hashlib
 import json
 import os
 import random
-import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 
+from claude_usage_blocks import active_block
 from claude_usage_common import (
-    check_thresholds, find_bin, is_stale, iso_to_epoch, log, normalize_api_limits,
-    now, prune_unreported, read_cache, set_limit, subprocess_env_for, update_cache,
+    check_thresholds, is_stale, iso_to_epoch, log, normalize_api_limits,
+    now, prune_unreported, read_cache, set_limit, sweep_tmp, update_cache,
 )
 
 OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
@@ -72,13 +70,23 @@ def session_active(cache, at):
 def limits_stale(cache, max_age, at):
     """The weekly window is the one every account has, and the statusLine
     keeps it fresh. Every other bucket in the cache counts too: the
-    per-model windows (Fable) only come from the API, and a bucket that
-    stopped being reported stays stale until one API response prunes it.
+    per-model windows (Fable) only come from the API, and a bucket whose
+    window ended stays stale until one API response prunes it. A window
+    that is still running but that the last API response didn't list (the
+    5-hour one, known only from the statusLine) doesn't count: asking the
+    API again can't refresh it.
     An account with nothing but the weekly window just rechecks hourly."""
     limits = cache["limits"]
     if is_stale(limits.get("seven_day"), max_age, at):
         return True
-    others = [k for k in limits if k != "seven_day"]
+    reported = cache["api"].get("reported")
+    others = []
+    for k in limits:
+        if k == "seven_day":
+            continue
+        if reported is not None and k not in reported and (limits[k].get("resets_at") or 0) > at:
+            continue
+        others.append(k)
     if others:
         return any(is_stale(limits[k], max_age, at) for k in others)
     return at - cache["api"].get("last_success_at", 0) > SCOPED_RECHECK_S
@@ -204,49 +212,6 @@ def fetch_api(token):
         return None, None, None, str(e)
 
 
-def run_ccusage():
-    exe = find_bin("ccusage")
-    if not exe:
-        return None, "ccusage not found"
-    t0 = time.monotonic()
-    try:
-        r = subprocess.run(
-            [exe, "blocks", "--active", "--json", "-O", "--single-thread"],
-            capture_output=True, text=True, timeout=60, env=subprocess_env_for(exe),
-        )
-        data = json.loads(r.stdout)
-    except Exception as e:
-        return None, f"ccusage failed: {e}"
-    elapsed = time.monotonic() - t0
-    for b in data.get("blocks", []):
-        if b.get("isActive"):
-            burn = b.get("burnRate") or {}
-            proj = b.get("projection") or {}
-            tc = b.get("tokenCounts") or {}
-            return {
-                "active": True,
-                "start_time": b.get("startTime"),
-                "end_time": b.get("endTime"),
-                "total_tokens": b.get("totalTokens"),
-                "cost_usd": b.get("costUSD"),
-                "tokens_per_minute": burn.get("tokensPerMinuteForIndicator"),
-                "cost_per_hour": burn.get("costPerHour"),
-                "token_counts": {
-                    "input": tc.get("inputTokens"),
-                    "output": tc.get("outputTokens"),
-                    "cache_create": tc.get("cacheCreationInputTokens"),
-                    "cache_read": tc.get("cacheReadInputTokens"),
-                },
-                "projection": {
-                    "remaining_minutes": proj.get("remainingMinutes"),
-                    "total_cost": proj.get("totalCost"),
-                    "total_tokens": proj.get("totalTokens"),
-                },
-                "models": b.get("models") or [],
-            }, f"ok {elapsed:.1f}s"
-    return {"active": False}, f"ok {elapsed:.1f}s (no active block)"
-
-
 def main(argv):
     force = "--force" in argv
     at = now()
@@ -286,14 +251,15 @@ def main(argv):
     block_result = None
     block_age = at - cache["block"].get("updated_at", 0)
     if force or (active and block_age > BLOCK_MAX_AGE_S):
-        block, msg = run_ccusage()
-        log(f"ccusage: {msg}")
-        if block is not None:
-            block_result = block
+        try:
+            block_result, msg = active_block(PROJECTS_DIR, at)
+            log(f"block: {msg}")
+        except Exception as e:
+            log(f"block: failed: {e}")
     elif not active:
-        log("skip ccusage: idle")
+        log("skip block: idle")
     else:
-        log(f"skip ccusage: block fresh ({block_age // 60}m)")
+        log(f"skip block: block fresh ({block_age // 60}m)")
 
     # ---- commit (re-read inside the lock so a concurrent capture isn't lost) --
     def mutate(c):
@@ -314,6 +280,8 @@ def main(argv):
                 for key, pct, resets, label in normalize_api_limits(payload):
                     set_limit(c, key, pct, resets, "api", label=label, ts=at)
                     reported.add(key)
+                if reported:
+                    a["reported"] = sorted(reported)
                 dropped = prune_unreported(c, reported, at)
                 if dropped:
                     log("api: no longer reports " + ", ".join(dropped) + "; dropped")
@@ -346,6 +314,9 @@ def main(argv):
         check_thresholds(c)
 
     update_cache(mutate)
+    swept = sweep_tmp(at)
+    if swept:
+        log(f"removed {swept} leftover temp file(s)")
     return 0
 
 

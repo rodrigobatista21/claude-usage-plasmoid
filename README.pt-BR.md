@@ -1,11 +1,11 @@
 # Claude Usage para KDE Plasma
 
-Um widget nativo do Plasma 6 que mostra quanto dos limites da sua assinatura do Claude Code você já usou: a janela de 5 horas (nos planos que têm), a janela de 7 dias, a janela semanal por modelo (Fable) e quanto o bloco atual de 5 horas do ccusage está custando. Ele nunca consulta a Anthropic em loop e nunca mexe no seu refresh token.
+Um widget nativo do Plasma 6 que mostra quanto dos limites da sua assinatura do Claude Code você já usou: a janela de 5 horas (nos planos que têm), a janela de 7 dias, a janela semanal por modelo (Fable) e quantos tokens o bloco atual de 5 horas já consumiu. Ele nunca consulta a Anthropic em loop e nunca mexe no seu refresh token.
 
 [Read in English](README.md)
 
 <p align="center">
-  <img src="docs/screenshot-full.png" alt="Popup completo: barras de sessão, semana e Fable, custo do bloco atual" width="380">
+  <img src="docs/screenshot-full.png" alt="Popup completo: barras de sessão, semana e Fable, tokens do bloco atual" width="380">
   &nbsp;&nbsp;
   <img src="docs/screenshot-panel.png" alt="Anel compacto no painel" width="200">
 </p>
@@ -26,13 +26,13 @@ Claude Code ──stdin da statusLine──▶ claude-statusline-wrapper.sh ─�
 timer do systemd (5 min) ──▶ collector.py ────────────────────────────┘             ▲
    ├─ API oauth/usage só se o cache estiver velho (≥10 min, com jitter,             │ lido a cada 30 s
    │  respeitando Retry-After e o lock do ccstatusline)                             │
-   └─ ccusage blocks --active só enquanto há sessão ativa                           │
+   └─ bloco ativo lido dos logs de sessão, só enquanto há sessão ativa              │
                                                              plasmoid (QML) ────────┘
 ```
 
-- **Wrapper da status line**: um shell script pequeno registrado como comando `statusLine` do Claude Code. Grava `rate_limits` no cache e repassa o mesmo JSON para a status line que você já usa (ccstatusline, script próprio, qualquer uma).
-- **Coletor**: um script Python oneshot rodado por um timer do systemd do usuário. Chama a API de uso no máximo a cada 10 minutos, só quando o cache está velho, recua em caso de 429 (de 5 min a 1 h, respeitando `Retry-After`) e nunca renova o token OAuth. Também roda o [ccusage](https://github.com/ryoppippi/ccusage) para o bloco atual, só enquanto há sessão ativa.
-- **Plasmoid**: lê o arquivo de cache e nada mais. Anel compacto no painel, popup completo com barras, contagem regressiva, previsão de esgotamento e tokens e custo do bloco atual. As cores seguem o esquema de cores do Plasma.
+- **Wrapper da status line**: um shell script pequeno registrado como comando `statusLine` do Claude Code. Grava `rate_limits` no cache (só quando uma sessão informa algo novo: toda sessão aberta fica repetindo os últimos números que conhece, e uma sessão parada sobrescreveria uma em uso) e repassa o mesmo JSON para a status line que você já usa (ccstatusline, script próprio, qualquer uma).
+- **Coletor**: um script Python oneshot rodado por um timer do systemd do usuário. Chama a API de uso no máximo a cada 10 minutos, só quando o cache está velho, recua em caso de 429 (de 5 min a 1 h, respeitando `Retry-After`) e nunca renova o token OAuth. Também calcula o bloco atual de 5 horas a partir dos logs de sessão do Claude Code, com as regras de bloco do [ccusage](https://github.com/ryoppippi/ccusage), lendo só os arquivos modificados recentemente (uma fração de segundo, sem precisar do Node), só enquanto há sessão ativa.
+- **Plasmoid**: lê o arquivo de cache e nada mais. Anel compacto no painel, popup completo com barras, contagem regressiva, previsão de esgotamento (pelo ritmo da última hora na janela de 5 h e do último dia nas semanais) e tokens do bloco atual. As cores seguem o esquema de cores do Plasma.
 - **Notificações**: avisos de área de trabalho em 90% e 100% da janela de sessão e em 90% da semanal, uma vez por janela, mais um quando uma janela que bateu 100% reseta. Saem do coletor, então funcionam mesmo sem o widget no painel.
 
 ## Requisitos
@@ -40,7 +40,7 @@ timer do systemd (5 min) ──▶ collector.py ──────────�
 - KDE Plasma 6 (testado no 6.6, Wayland), `kpackagetool6`, `systemd --user`.
 - Python 3.9 ou mais novo (só biblioteca padrão).
 - Claude Code 2.1.80 ou mais novo com assinatura Pro ou Max (`rate_limits` só existe nelas).
-- Opcional: [ccusage](https://github.com/ryoppippi/ccusage) para a seção "bloco atual"; `notify-send` para as notificações.
+- Opcional: `notify-send` para as notificações.
 
 ## Instalação
 
@@ -69,7 +69,7 @@ Botão direito no widget > **Configurar**:
 |---|---|---|
 | Métrica no painel | Sessão (5 h) | Qual janela o anel do painel mostra; cai para a outra quando a conta não informa a escolhida |
 | Mostrar porcentagem | ligado | Número ao lado do anel |
-| Bloco atual | ligado | Tokens, custo, consumo e projeção do ccusage |
+| Bloco atual | ligado | Tokens, tokens gerados, consumo e número de requisições do bloco de 5 horas em andamento |
 | Reler o cache a cada | 30 s | Frequência com que o widget lê o cache |
 | Considerar velho após | 15 min | Marca o dado como velho durante uma sessão ativa |
 | Arquivo de cache | `$HOME/.cache/claude-usage/usage.json` | Onde o coletor grava |
@@ -79,7 +79,7 @@ Os tempos do coletor ficam no topo de `collector/collector.py`.
 ## Conferindo se está funcionando
 
 ```bash
-# decisões do coletor ao vivo (uma linha cada: skip / api: 200 / api: 429 -> backoff / ccusage: ok)
+# decisões do coletor ao vivo (uma linha cada: skip / api: 200 / api: 429 -> backoff / block: ok)
 journalctl --user -t claude-usage-collector -f
 
 # o que o widget enxerga
@@ -115,7 +115,7 @@ Restaura a status line anterior, desativa o timer, remove o plasmoid e apaga o c
 
 ## Créditos
 
-- [ccusage](https://github.com/ryoppippi/ccusage) pela contabilidade local dos blocos.
+- [ccusage](https://github.com/ryoppippi/ccusage) pelas regras de contabilidade dos blocos.
 - [ccstatusline](https://github.com/sirmalloc/ccstatusline) por mostrar que o payload da status line bastava.
 
 Licença MIT.

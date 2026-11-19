@@ -12,7 +12,7 @@
         "Id": "org.rodrigom.claudeusage",
         "License": "MIT",
         "Name": "Claude Usage",
-        "Version": "1.1.2",
+        "Version": "1.2.0",
         "Website": "https://github.com/rodrigobatista21/claude-usage-plasmoid",
         "BugReportUrl": "https://github.com/rodrigobatista21/claude-usage-plasmoid/issues"
     },

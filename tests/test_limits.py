@@ -156,5 +156,140 @@ class MergeCcstatusline(CcstatuslineFiles):
         self.assertEqual(c["limits"]["five_hour"]["used_percentage"], 12.0)
 
 
+class PruneKeepsLiveWindows(unittest.TestCase):
+    def test_running_window_survives_an_api_that_does_not_list_it(self):
+        # 2026-11-18: the statusLine reports the 5-hour window again, the API
+        # doesn't. Its last value stays true until the reset.
+        c = cache_with_dead_five_hour()
+        c["limits"]["five_hour"] = {"used_percentage": 25.0, "resets_at": NOW + 3600,
+                                    "source": "statusline", "updated_at": NOW - 3000}
+        self.assertEqual(common.prune_unreported(c, {"seven_day", "seven_day_fable"}, NOW), [])
+        self.assertIn("five_hour", c["limits"])
+
+    def test_running_window_the_api_cannot_refresh_is_not_stale(self):
+        c = cache_with_dead_five_hour()
+        c["limits"]["five_hour"] = {"used_percentage": 25.0, "resets_at": NOW + 3600,
+                                    "source": "statusline", "updated_at": NOW - 3000}
+        self.assertTrue(collector.limits_stale(c, collector.STALE_ACTIVE_S, NOW))
+        c["api"]["reported"] = ["seven_day", "seven_day_fable"]
+        self.assertFalse(collector.limits_stale(c, collector.STALE_ACTIVE_S, NOW))
+        # ...but once it has ended it is stale again, which gets it pruned.
+        c["limits"]["five_hour"]["resets_at"] = NOW - 60
+        self.assertTrue(collector.limits_stale(c, collector.STALE_ACTIVE_S, NOW))
+
+
+class StatuslineSessions(unittest.TestCase):
+    """Two Claude Code sessions open: the busy one reports fresh numbers,
+    the idle one keeps repeating what it saw an hour ago."""
+
+    RESET = NOW + 4 * 3600
+
+    def report(self, cache, session, pct, ts, resets_at=None, key="five_hour"):
+        win = {key: {"used_percentage": pct, "resets_at": resets_at or self.RESET}}
+        return common.record_statusline(cache, session, win, ts)
+
+    def pct(self, cache, key="five_hour"):
+        return cache["limits"][key]["used_percentage"]
+
+    def test_idle_session_does_not_overwrite_the_busy_one(self):
+        c = common.default_cache()
+        self.report(c, "idle", 4, NOW)
+        self.report(c, "busy", 4, NOW + 1)
+        self.report(c, "busy", 25, NOW + 10)
+        self.assertEqual(self.pct(c), 25.0)
+        changed, applied = self.report(c, "idle", 4, NOW + 20)
+        self.assertEqual((changed, applied), (False, False))
+        self.assertEqual(self.pct(c), 25.0)
+        self.assertEqual([p for _t, p in c["history"]["five_hour"]["samples"]], [4.0, 25.0])
+
+    def test_first_report_of_an_unknown_session_below_current_is_old(self):
+        c = common.default_cache()
+        self.report(c, "busy", 25, NOW)
+        self.report(c, "resumed", 4, NOW + 5)
+        self.assertEqual(self.pct(c), 25.0)
+
+    def test_first_report_of_an_unknown_session_above_current_counts(self):
+        c = common.default_cache()
+        self.report(c, "a", 25, NOW)
+        self.report(c, "b", 30, NOW + 5)
+        self.assertEqual(self.pct(c), 30.0)
+
+    def test_a_new_observation_counts_even_when_lower(self):
+        c = common.default_cache()
+        self.report(c, "a", 25, NOW)
+        self.report(c, "a", 20, NOW + 5)
+        self.assertEqual(self.pct(c), 20.0)
+
+    def test_repeated_higher_value_does_not_undo_an_api_correction(self):
+        c = common.default_cache()
+        self.report(c, "a", 25, NOW)
+        common.set_limit(c, "five_hour", 20, self.RESET, "api", ts=NOW + 30)
+        self.report(c, "a", 25, NOW + 40)
+        self.assertEqual(self.pct(c), 20.0)
+
+    def test_older_window_is_ignored_and_newer_window_wins(self):
+        c = common.default_cache()
+        self.report(c, "busy", 3, NOW, resets_at=self.RESET + 5 * 3600)
+        self.report(c, "idle", 80, NOW + 5, resets_at=self.RESET)
+        self.assertEqual(self.pct(c), 3.0)
+        self.report(c, "idle", 1, NOW + 9, resets_at=self.RESET + 10 * 3600)
+        self.assertEqual(self.pct(c), 1.0)
+
+    def test_window_that_already_ended_is_ignored(self):
+        c = common.default_cache()
+        changed, applied = self.report(c, "idle", 80, NOW, resets_at=NOW - 60)
+        self.assertFalse(applied)
+        self.assertNotIn("five_hour", c["limits"])
+
+    def test_same_value_is_confirmed_at_most_once_a_minute(self):
+        c = common.default_cache()
+        self.report(c, "a", 25, NOW)
+        self.assertEqual(self.report(c, "a", 25, NOW + 10), (False, False))
+        self.assertEqual(c["limits"]["five_hour"]["updated_at"], NOW)
+        self.assertEqual(self.report(c, "a", 25, NOW + common.HEARTBEAT_S), (True, False))
+        self.assertEqual(c["limits"]["five_hour"]["updated_at"], NOW + common.HEARTBEAT_S)
+        self.assertEqual(c["session_seen_at"], NOW + common.HEARTBEAT_S)
+
+    def test_idle_session_matching_an_api_value_keeps_it_fresh(self):
+        c = common.default_cache()
+        common.set_limit(c, "seven_day", 8, WEEK_RESET, "api", ts=NOW)
+        self.report(c, "a", 8, NOW + 90, resets_at=WEEK_RESET, key="seven_day")
+        self.assertEqual(c["limits"]["seven_day"]["updated_at"], NOW + 90)
+
+    def test_sessions_not_seen_for_a_day_are_forgotten(self):
+        c = common.default_cache()
+        self.report(c, "old", 4, NOW)
+        self.report(c, "new", 5, NOW + common.SESSION_TTL_S + 1, resets_at=NOW + 2 * 86400)
+        self.assertEqual(list(c["sessions"]), ["new"])
+
+
+class SweepTmp(unittest.TestCase):
+    def test_removes_only_old_temp_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            orig = common.CACHE_PATH
+            common.CACHE_PATH = os.path.join(d, "usage.json")
+            self.addCleanup(setattr, common, "CACHE_PATH", orig)
+            old, fresh, cache = (common.CACHE_PATH + ".tmp-1", common.CACHE_PATH + ".tmp-2",
+                                 common.CACHE_PATH)
+            for path in (old, fresh, cache):
+                open(path, "w").close()
+            os.utime(old, (NOW - 7200, NOW - 7200))
+            os.utime(fresh, (NOW - 60, NOW - 60))
+            os.utime(cache, (NOW - 7200, NOW - 7200))
+            self.assertEqual(common.sweep_tmp(NOW), 1)
+            self.assertEqual(sorted(os.listdir(d)), ["usage.json", "usage.json.tmp-2"])
+
+
+class History(unittest.TestCase):
+    def test_flat_stretch_keeps_two_samples_and_changes_are_always_kept(self):
+        c = common.default_cache()
+        for i in range(10):
+            common.add_sample(c, "seven_day", 4.0, WEEK_RESET, NOW + i * 600)
+        common.add_sample(c, "seven_day", 5.0, WEEK_RESET, NOW + 5401)
+        common.add_sample(c, "seven_day", 6.0, WEEK_RESET, NOW + 5402)
+        self.assertEqual(c["history"]["seven_day"]["samples"],
+                         [[NOW, 4.0], [NOW + 5400, 4.0], [NOW + 5401, 5.0], [NOW + 5402, 6.0]])
+
+
 if __name__ == "__main__":
     unittest.main()

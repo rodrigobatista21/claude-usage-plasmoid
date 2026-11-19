@@ -79,7 +79,8 @@ PlasmoidItem {
     function forecastFor(key) {
         var e = limits[key];
         if (!e) return "";
-        return Fmt.forecast(history[key], e.used_percentage, e.resets_at, nowSec);
+        // The 5-hour window is judged by the last hour, the weekly ones by the last day.
+        return Fmt.forecast(history[key], e.used_percentage, e.resets_at, nowSec, key === "five_hour" ? 3600 : 86400);
     }
 
     function resetText(e) {

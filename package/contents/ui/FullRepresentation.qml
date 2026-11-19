@@ -134,9 +134,9 @@ PlasmaExtras.Representation {
                     rowSpacing: 0
 
                     PlasmaComponents3.Label { text: "tokens"; font.pointSize: Kirigami.Theme.smallFont.pointSize; opacity: 0.7 }
-                    PlasmaComponents3.Label { text: "custo estimado"; font.pointSize: Kirigami.Theme.smallFont.pointSize; opacity: 0.7 }
+                    PlasmaComponents3.Label { text: "gerados (saída)"; font.pointSize: Kirigami.Theme.smallFont.pointSize; opacity: 0.7 }
                     PlasmaComponents3.Label { text: Fmt.fmtTokens(root.block.total_tokens); font.bold: true }
-                    PlasmaComponents3.Label { text: Fmt.fmtMoney(root.block.cost_usd); font.bold: true }
+                    PlasmaComponents3.Label { text: Fmt.fmtTokens(root.block.token_counts ? root.block.token_counts.output : null); font.bold: true }
                 }
 
                 PlasmaComponents3.Label {
@@ -146,19 +146,12 @@ PlasmaExtras.Representation {
                     opacity: 0.75
                     elide: Text.ElideRight
                     text: {
+                        var parts = [];
                         var tpm = root.block.tokens_per_minute;
-                        if (!tpm || tpm < 1) return "consumo: ocioso";
-                        return "consumo: " + Fmt.fmtTokens(tpm) + " tok/min · " + Fmt.fmtMoney(root.block.cost_per_hour) + "/h";
+                        parts.push((!tpm || tpm < 1) ? "consumo: ocioso" : "consumo: " + Fmt.fmtTokens(tpm) + " tok/min");
+                        if (root.block.entries) parts.push(root.block.entries + " requisições");
+                        return parts.join(" · ");
                     }
-                }
-
-                PlasmaComponents3.Label {
-                    visible: root.block.active === true && root.block.projection && root.block.projection.total_cost
-                    Layout.fillWidth: true
-                    font.pointSize: Kirigami.Theme.smallFont.pointSize
-                    opacity: 0.75
-                    elide: Text.ElideRight
-                    text: root.block.projection ? ("projeção: ~" + Fmt.fmtMoney(root.block.projection.total_cost) + " até o fim do bloco (" + Fmt.fmtDuration((root.block.projection.remaining_minutes || 0) * 60) + ")") : ""
                 }
             }
         }

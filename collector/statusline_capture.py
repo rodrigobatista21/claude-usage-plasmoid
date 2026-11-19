@@ -5,7 +5,7 @@ wrapper never breaks the status line."""
 import json
 import sys
 
-from claude_usage_common import check_thresholds, log, now, set_limit, update_cache
+from claude_usage_common import check_thresholds, log, now, read_cache, record_statusline, update_cache
 
 WINDOWS = ("five_hour", "seven_day")
 
@@ -21,15 +21,21 @@ def main():
     found = {k: limits.get(k) for k in WINDOWS if isinstance(limits.get(k), dict)}
     if not found:
         return 0
+    session_id = str(payload.get("session_id") or "")
     ts = now()
 
+    # Dry run on an unlocked read: most refreshes repeat what is already on
+    # disk, and then there is nothing to write.
+    try:
+        if not record_statusline(read_cache(), session_id, found, ts)[0]:
+            return 0
+    except Exception as e:
+        log(f"statusline capture failed: {e}")
+        return 0
+
     def mutate(cache):
-        for key, win in found.items():
-            set_limit(cache, key, win.get("used_percentage"), win.get("resets_at"),
-                      "statusline", ts=ts)
-        cache["session_active"] = True
-        cache["session_seen_at"] = ts
-        check_thresholds(cache)
+        if record_statusline(cache, session_id, found, ts)[1]:
+            check_thresholds(cache)
 
     try:
         update_cache(mutate)
